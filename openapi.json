@@ -1,0 +1,331 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Minecraft Data API",
+    "version": "1.0.0",
+    "description": "Static JSON generated daily with the official Minecraft data generator (--all). Updated automatically by GitHub Actions."
+  },
+  "servers": [
+    {
+      "url": "https://xerinv0.github.io/mc-data"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Index"
+    },
+    {
+      "name": "Reports"
+    }
+  ],
+  "paths": {
+    "/versions.json": {
+      "get": {
+        "tags": [
+          "Index"
+        ],
+        "summary": "List all available versions (newest first)",
+        "responses": {
+          "200": {
+            "description": "Array of versions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "type": "string"
+                      },
+                      "releaseTime": {
+                        "type": "string"
+                      },
+                      "path": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/latest.json": {
+      "get": {
+        "tags": [
+          "Index"
+        ],
+        "summary": "Latest release and snapshot ids",
+        "responses": {
+          "200": {
+            "description": "Latest ids",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "release": {
+                      "type": "string"
+                    },
+                    "snapshot": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/blocks.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "blocks.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/commands.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "commands.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/datapack.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "datapack.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/items.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "items.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/json-rpc-api-schema.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "json-rpc-api-schema.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/packets.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "packets.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/versions/{type}/{id}/reports/registries.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "registries.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "type": {
+        "name": "type",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "release",
+            "snapshot"
+          ]
+        }
+      },
+      "id": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "default": "26.3"
+        },
+        "description": "Version id, for example 1.21.10"
+      }
+    }
+  }
+}
