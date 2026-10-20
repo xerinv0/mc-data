@@ -103,7 +103,18 @@ jobs:
             curl -sfL "$JAR_URL" -o "$RUN_DIR/server.jar"
 
             echo "Running data generator..."
-            ( cd "$RUN_DIR" && java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --all )
+            (
+            cd "$RUN_DIR"
+            if unzip -l server.jar | grep -q 'META-INF/versions.list'; then
+            # 1.18+ (bundler format)
+            timeout 20m java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --all </dev/null
+            elif unzip -l server.jar | grep -q 'net/minecraft/data/Main.class'; then
+            # 1.13 - 1.17 (plain jar)
+            timeout 20m java -cp server.jar net.minecraft.data.Main --all </dev/null
+            else
+            echo "No data generator in this version."
+            fi
+            ) || true
 
             if [ ! -d "$RUN_DIR/generated/reports" ]; then
               echo "Generator produced no reports for $ID. Skipping."
