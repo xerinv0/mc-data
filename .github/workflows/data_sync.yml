@@ -19,7 +19,7 @@ jobs:
 
     env:
       DATA_BRANCH: data          
-      START_VERSION: "1.8.9"   
+      START_VERSION: "1.13"   
       INCLUDE_DATA: "false"   
       SITE_URL: ""            
 
