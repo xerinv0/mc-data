@@ -1,209 +1,228 @@
-name: 'Minecraft Data Generator & Git Sync'
+name: 'Minecraft Data Generator & API Sync'
 
 on:
-  # Schedule the job to run daily at 03:00 UTC to check for new versions
   schedule:
-    - cron: '0 18 * * *'
-  # Allow manual execution via the GitHub Actions interface
+    - cron: '0 18 * * *'   # daily at 18:00 UTC
   workflow_dispatch:
+
+# Never let two runs push at the same time
+concurrency:
+  group: minecraft-data-sync
+  cancel-in-progress: false
 
 jobs:
   generate_and_sync:
     runs-on: ubuntu-latest
-    
-    # Permissions are needed for the actions/checkout step and later for pushing
+    timeout-minutes: 350
     permissions:
-      contents: write 
+      contents: write
+
+    env:
+      DATA_BRANCH: data          
+      START_VERSION: "1.8.9"   
+      INCLUDE_DATA: "false"   
+      SITE_URL: ""            
 
     steps:
-      - name: 1. Setup Java 25 (Required for the Minecraft Data Generator JAR)
+      - name: 1. Setup Java 25
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '25'
 
-      - name: 2. Checkout Repository (using PAT for push access)
-        # Use the PAT token from secrets for authentication on future pushes.
+      - name: 2. Checkout default branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch full history to check for existing remote branches
-          token: ${{ secrets.GH_PAT }}
+          fetch-depth: 0
+          # Use a PAT so the push triggers the GitHub Pages build; falls back to the built-in token
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: 3. Generator Logic (Bash Script)
-        id: run_sync
-        env:
-          # Start processing from this version onwards (inclusive).
-          START_VERSION: "1.21.10"
-          MANIFEST_URL: "https://launchermeta.mojang.com/mc/game/version_manifest.json"
-          GH_TOKEN: ${{ secrets.PAT }} # Token for pushing new branches
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-
+      - name: 3. Switch to data branch (create orphan branch if missing)
         run: |
-          # --- CONSTANT SETUP ---
-          REPO_DIR="."
-          OUTPUT_DIR="minecraft_versions"
-          
-          # FIX: Konfiguriere Git-Identität, da der Runner keine Standard-Identität hat.
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "GitHub Actions Bot"
-          
-          # NEU: DMCA/EULA-Schutz: Füge den temporären Ordner zur .gitignore hinzu, 
-          # um sicherzustellen, dass die Minecraft Server JAR niemals committed wird.
-          echo "" >> .gitignore
-          echo "# Temporäres Verzeichnis für den Download und die Generierung der JAR-Dateien (DMCA/EULA-Schutz)" >> .gitignore
-          echo "$OUTPUT_DIR/" >> .gitignore
-          git add .gitignore
-          
-          # Embed the PAT into the Git URL for pushing new branches.
-          AUTH_REPO_URL=$(echo "${REPO_URL}" | sed "s|https://|https://${GH_TOKEN}@|")
+          git config user.name  "GitHub Actions Bot"
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$DATA_BRANCH"
+            git checkout -B "$DATA_BRANCH" "origin/$DATA_BRANCH"
+          else
+            git checkout --orphan "$DATA_BRANCH"
+            git rm -rf . >/dev/null 2>&1 || true
+            git commit --allow-empty -m "Initialize data branch"
+            git push origin "$DATA_BRANCH"
+          fi
 
-          echo "Lade Version Manifest..."
-          MANIFEST=$(curl -s $MANIFEST_URL)
-          
-          # --- 1. Versionen filtern und in die korrekte Reihenfolge bringen (Alt -> Neu) ---
-          
-          echo "Suche den Index der START_VERSION ($START_VERSION)..."
+      - name: 4. Generate data for new versions
+        run: |
+          set -euo pipefail
 
-          # Nutze jq, um den Index zu finden, an dem START_VERSION liegt.
-          # Das Manifest ist chronologisch sortiert (Index 0 = neueste Version).
-          START_INDEX=$(echo "$MANIFEST" | jq -r --arg start "$START_VERSION" '.versions | map(.id) | index($start)')
-          
+          MANIFEST_URL="https://launchermeta.mojang.com/mc/game/version_manifest.json"
+          VERSIONS_DIR="versions"
+          WORK_DIR="$RUNNER_TEMP/mcgen"   # outside the repo, so JARs are never committed
+          mkdir -p "$VERSIONS_DIR" "$WORK_DIR"
+
+          echo "Loading version manifest..."
+          MANIFEST=$(curl -sf "$MANIFEST_URL")
+
+          START_INDEX=$(echo "$MANIFEST" | jq -r --arg v "$START_VERSION" '.versions | map(.id) | index($v)')
           if [ "$START_INDEX" == "null" ]; then
-            echo "Fehler: Die angegebene START_VERSION ($START_VERSION) wurde im Versions-Manifest nicht gefunden. Synch wird abgebrochen."
-            exit 0
+            echo "START_VERSION $START_VERSION not found in manifest. Aborting."
+            exit 1
           fi
-          
-          echo "START_VERSION ($START_VERSION) gefunden bei Index: $START_INDEX. Verarbeite ab dieser Version."
-          
-          # Wende die indexbasierte Logik an (Slice von 0 bis zum gefundenen Index, dann umkehren).
-          # Das Ergebnis ist eine Liste der zu verarbeitenden Versionen, sortiert von Alt nach Neu.
-          VERSIONS_JSON=$(echo "$MANIFEST" | jq -c --argjson start_index "$START_INDEX" '
-            .versions 
-            | .[0 : $start_index + 1]  # Slice von Index 0 bis zum START_INDEX (inklusive)
-            | reverse                  # Kehrt die Reihenfolge um: jetzt von Alt nach Neu
-            | .[]                      # Erzeugt einzelne Objekte für die Bash-Schleife
-          ')
 
-          if [ -z "$VERSIONS_JSON" ]; then
-            echo "Keine neuen Versionen ab $START_VERSION gefunden."
-            exit 0
-          fi
-          
-          echo "Verarbeite Versionen ab $START_VERSION, von der ältesten zur neuesten..."
-          PROCESSED_COUNT=0
-          
-          # Speichere den Branch, der als Basis für den nächsten Branch dient.
-          # Wir starten immer von 'main' (oder 'master') als Basis.
-          LAST_BRANCH_NAME="main"
-          if ! git show-ref --verify --quiet refs/heads/main; then
-              LAST_BRANCH_NAME="master"
-          fi
-          echo "Start-Basis-Branch: $LAST_BRANCH_NAME"
+          # Oldest -> newest, from START_VERSION up to the latest
+          echo "$MANIFEST" | jq -c --argjson i "$START_INDEX" \
+            '.versions | .[0:$i+1] | reverse | .[]' > "$WORK_DIR/versions.jsonl"
 
-          for VERSION_OBJECT in $VERSIONS_JSON; do
-            VERSION_ID=$(echo "$VERSION_OBJECT" | jq -r '.id')
-            VERSION_TYPE=$(echo "$VERSION_OBJECT" | jq -r '.type')
-            VERSION_URL=$(echo "$VERSION_OBJECT" | jq -r '.url')
-            
-            # --- 2. Namen bereinigen und Branch-Namen erstellen ---
-            
-            # Ersetze Leerzeichen und Slashes durch Bindestriche für gültige Git-Namen.
-            CLEAN_ID=$(echo "$VERSION_ID" | sed 's/[ /]/-/g')
-            BRANCH_NAME="${VERSION_TYPE:0:1}-${CLEAN_ID}" # s- oder r- Präfix
+          PROCESSED=0
 
-            # Ordnername behält die Original-ID (mit Leerzeichen/Punkten)
-            FOLDER_NAME="${VERSION_TYPE:0:1}-${VERSION_ID}"
-            TEMP_FOLDER="$OUTPUT_DIR/$FOLDER_NAME"
-            GENERATED_PATH="$TEMP_FOLDER/generated"
+          # fd 3 keeps java/git/curl from swallowing the loop's input
+          while IFS= read -r OBJ <&3; do
+            ID=$(echo "$OBJ"           | jq -r '.id')
+            TYPE=$(echo "$OBJ"         | jq -r '.type')   # release / snapshot / ...
+            URL=$(echo "$OBJ"          | jq -r '.url')
+            RELEASE_TIME=$(echo "$OBJ" | jq -r '.releaseTime')
 
-            echo -e "\n--- Prüfe Version: $VERSION_ID (Branch: $BRANCH_NAME) ---"
-            
-            # --- 3. Prüfen, ob Branch existiert ---
-            if git ls-remote --exit-code origin "$BRANCH_NAME" > /dev/null 2>&1; then
-              echo "Branch $BRANCH_NAME existiert bereits remote. Überspringe Generierung."
-              # Wenn der Branch existiert, muss er als Basis für den nächsten dienen.
-              LAST_BRANCH_NAME="$BRANCH_NAME"
+            CLEAN_ID=$(echo "$ID" | sed 's/[ \/]/-/g')
+            TARGET="$VERSIONS_DIR/$TYPE/$CLEAN_ID"
+
+            echo -e "\n--- $ID ($TYPE) ---"
+
+            if [ -f "$TARGET/meta.json" ]; then
+              echo "Already generated. Skipping."
               continue
             fi
-            
-            # --- 4. Download und Generierung der Daten ---
-            
-            if [ ! -d "$GENERATED_PATH" ]; then
-                echo "Fehlende Daten. Lade Manifest $VERSION_ID herunter..."
-                
-                VERSION_JSON=$(curl -s "$VERSION_URL")
-                SERVER_JAR_URL=$(echo "$VERSION_JSON" | jq -r '.downloads.server.url')
-                
-                if [ "$SERVER_JAR_URL" == "null" ] || [ -z "$SERVER_JAR_URL" ]; then
-                    echo "Keine Server-Version für $VERSION_ID gefunden. Überspringe."
-                    continue
-                fi
-                
-                mkdir -p "$TEMP_FOLDER"
-                JAR_PATH="$TEMP_FOLDER/minecraft_server.jar"
 
-                echo "Lade Server JAR: $SERVER_JAR_URL"
-                curl -s -L "$SERVER_JAR_URL" -o "$JAR_PATH"
-
-                echo "Führe Data Generator aus..."
-                # Wechselt in den TEMP_FOLDER, damit 'generated' dort erstellt wird.
-                pushd "$TEMP_FOLDER" > /dev/null
-                java -DbundlerMainClass=net.minecraft.data.Main -jar ./minecraft_server.jar --all
-                popd > /dev/null
-            else
-                echo "Daten existieren bereits in $GENERATED_PATH. Überspringe Download/Generierung."
+            JAR_URL=$(curl -sf "$URL" | jq -r '.downloads.server.url // empty' || true)
+            if [ -z "$JAR_URL" ]; then
+              echo "No server JAR for $ID. Skipping."
+              continue
             fi
-            
-            # NEUER FIX: Absoluten Pfad zum Generator-Ergebnis speichern, 
-            # bevor der Git-Checkout das relative CWD verwirrt.
-            ABSOLUTE_GENERATED_PATH="$(pwd)/$GENERATED_PATH"
-            
-            # --- 5. Git-Operationen (Branch erstellen, Kopieren, Commit) ---
-            
-            # FIX: Checke den LAST_BRANCH_NAME aus, um die Historie zu erben.
-            echo "Wechsle zur Basis $LAST_BRANCH_NAME"
-            git checkout "$LAST_BRANCH_NAME"
 
-            # Neuen Branch erstellen und darauf wechseln
-            git branch "$BRANCH_NAME" || true
-            git checkout "$BRANCH_NAME"
-            
-            # B. Verzeichnis säubern (alles außer .git und .github)
-            echo "Bereinige Arbeitsverzeichnis..."
-            # LÖSCHE NUR DIE VOM GENERATOR ERZEUGTEN DATEN-VERZEICHNISSE (data/ und reports/),
-            # um sicherzustellen, dass keine alten Dateien aus dem vorherigen Branch übrig bleiben, 
-            # die in der neuen Version gelöscht wurden.
-            rm -rf "$REPO_DIR/data" "$REPO_DIR/reports"
+            RUN_DIR="$WORK_DIR/$CLEAN_ID"
+            mkdir -p "$RUN_DIR"
+            curl -sfL "$JAR_URL" -o "$RUN_DIR/server.jar"
 
-            # C. Inhalt von "generated" in das Repo-Wurzelverzeichnis kopieren
-            echo "Kopiere Daten von $ABSOLUTE_GENERATED_PATH nach $REPO_DIR"
-            
-            # DEBUG: Aktiviere Shell-Tracing, um die genaue Ausführung des cp-Befehls zu sehen.
-            set -x
-            # Kopiert explizit die bekannten Unterordner unter Verwendung des absoluten Pfades.
-            cp -r "$ABSOLUTE_GENERATED_PATH/data" "$ABSOLUTE_GENERATED_PATH/reports" "$REPO_DIR"
-            # DEBUG: Deaktiviere Shell-Tracing
-            set +x
+            echo "Running data generator..."
+            ( cd "$RUN_DIR" && java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --all )
 
-            # D. Commit und Push
-            git add -A
-            COMMIT_MSG="Update to $VERSION_ID"
-            
-            # git commit wird jetzt erfolgreich sein, da user.name/user.email konfiguriert ist.
-            if git commit -m "$COMMIT_MSG"; then
-              echo "Pushe Branch $BRANCH_NAME zu Remote..."
-              git push "$AUTH_REPO_URL" "$BRANCH_NAME"
-              PROCESSED_COUNT=$((PROCESSED_COUNT + 1))
-              # NEU: Aktualisiere den Basis-Branch für die nächste Iteration.
-              LAST_BRANCH_NAME="$BRANCH_NAME"
-            else
-              echo "Keine Änderungen für $VERSION_ID gefunden (kein Commit/Push)."
+            if [ ! -d "$RUN_DIR/generated/reports" ]; then
+              echo "Generator produced no reports for $ID. Skipping."
+              rm -rf "$RUN_DIR"
+              continue
             fi
-            
-            # WICHTIG: Kein Zurückwechseln zum main-Branch hier, da die Schleife den Basis-Branch wechselt.
-            # Nur zum letzten Branch wechseln, falls der Push fehlschlägt (was hier nicht nötig ist).
-            # Wir verwenden den LAST_BRANCH_NAME.
 
-          done # Ende der Versionsschleife
-          
-          echo -e "\n*** Synchonisation abgeschlossen. ${PROCESSED_COUNT} neue Branches gepusht. ***"
+            mkdir -p "$TARGET"
+            cp -r "$RUN_DIR/generated/reports" "$TARGET/"
+            if [ "$INCLUDE_DATA" = "true" ] && [ -d "$RUN_DIR/generated/data" ]; then
+              cp -r "$RUN_DIR/generated/data" "$TARGET/"
+            fi
+            rm -rf "$RUN_DIR"
+
+            jq -n --arg id "$ID" --arg type "$TYPE" --arg rt "$RELEASE_TIME" --arg path "$TARGET" \
+              '{id:$id, type:$type, releaseTime:$rt, path:$path}' > "$TARGET/meta.json"
+
+            git add "$TARGET"
+            git commit -m "Add data for $ID ($TYPE)"
+            git pull --rebase origin "$DATA_BRANCH"
+            git push origin "HEAD:$DATA_BRANCH"
+            PROCESSED=$((PROCESSED + 1))
+          done 3< "$WORK_DIR/versions.jsonl"
+
+          # ------------------------------------------------------------------
+          # Site files: index, latest, OpenAPI spec, docs UI
+          # ------------------------------------------------------------------
+          echo "Building API index and docs..."
+
+          if ls "$VERSIONS_DIR"/*/*/meta.json >/dev/null 2>&1; then
+            jq -s 'sort_by(.releaseTime) | reverse' "$VERSIONS_DIR"/*/*/meta.json > versions.json
+          else
+            echo "[]" > versions.json
+          fi
+
+          echo "$MANIFEST" | jq '{release: .latest.release, snapshot: .latest.snapshot}' > latest.json
+          LATEST_RELEASE=$(echo "$MANIFEST" | jq -r '.latest.release')
+
+          if [ -n "${SITE_URL:-}" ]; then
+            SITE="${SITE_URL%/}"
+          else
+            OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+            SITE="https://${OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          fi
+
+          # Every top-level report file found in any version becomes an endpoint
+          REPORTS_JSON=$(find "$VERSIONS_DIR" -mindepth 4 -maxdepth 4 -type f -path '*/reports/*.json' -printf '%f\n' \
+            | sort -u | jq -R . | jq -s .)
+
+          jq -n \
+            --arg server "$SITE" \
+            --arg example "$LATEST_RELEASE" \
+            --argjson reports "$REPORTS_JSON" '
+            def ok($d): {"200": {description: $d, content: {"application/json": {schema: {type: "object"}}}}, "404": {description: "Not found"}};
+            {
+              openapi: "3.0.3",
+              info: {
+                title: "Minecraft Data API",
+                version: "1.0.0",
+                description: "Static JSON generated daily with the official Minecraft data generator (--all). Updated automatically by GitHub Actions."
+              },
+              servers: [{url: $server}],
+              tags: [{name: "Index"}, {name: "Reports"}],
+              paths: (
+                {
+                  "/versions.json": {get: {tags: ["Index"], summary: "List all available versions (newest first)",
+                    responses: {"200": {description: "Array of versions", content: {"application/json": {schema: {type: "array",
+                      items: {type: "object", properties: {id: {type: "string"}, type: {type: "string"}, releaseTime: {type: "string"}, path: {type: "string"}}}}}}}}}},
+                  "/latest.json": {get: {tags: ["Index"], summary: "Latest release and snapshot ids",
+                    responses: {"200": {description: "Latest ids", content: {"application/json": {schema: {type: "object",
+                      properties: {release: {type: "string"}, snapshot: {type: "string"}}}}}}}}}
+                }
+                + ($reports | map({
+                    key: "/versions/{type}/{id}/reports/\(.)",
+                    value: {get: {
+                      tags: ["Reports"],
+                      summary: "\(.)",
+                      parameters: [{"$ref": "#/components/parameters/type"}, {"$ref": "#/components/parameters/id"}],
+                      responses: ok("Generated report")
+                    }}
+                  }) | from_entries)
+              ),
+              components: {parameters: {
+                type: {name: "type", "in": "path", required: true, schema: {type: "string", "enum": ["release", "snapshot"]}},
+                id:   {name: "id",   "in": "path", required: true, schema: {type: "string", "default": $example}, description: "Version id, for example 1.21.10"}
+              }}
+            }' > openapi.json
+
+          cat > index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Minecraft Data API</title>
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+          </head>
+          <body>
+            <div id="swagger-ui"></div>
+            <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+            <script>
+              window.ui = SwaggerUIBundle({
+                url: "openapi.json",
+                dom_id: "#swagger-ui",
+                deepLinking: true
+              });
+            </script>
+          </body>
+          </html>
+          EOF
+
+          # Skip Jekyll processing (faster builds, nothing gets ignored)
+          touch .nojekyll
+
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Update index, latest.json and OpenAPI docs"
+            git pull --rebase origin "$DATA_BRANCH"
+            git push origin "HEAD:$DATA_BRANCH"
+          fi
+
+          echo -e "\n*** Done. $PROCESSED new version(s) pushed to $DATA_BRANCH. ***"
