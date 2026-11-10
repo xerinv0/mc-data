@@ -239,6 +239,37 @@
         }
       }
     },
+    "/versions/{type}/{id}/reports/loot_context_requirements.json": {
+      "get": {
+        "tags": [
+          "Reports"
+        ],
+        "summary": "loot_context_requirements.json",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/type"
+          },
+          {
+            "$ref": "#/components/parameters/id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Generated report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
     "/versions/{type}/{id}/reports/packets.json": {
       "get": {
         "tags": [
